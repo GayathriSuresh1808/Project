@@ -1,0 +1,64 @@
+#code for counts to tpm
+
+# Load required packages
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+if (!requireNamespace("biomaRt", quietly = TRUE)) BiocManager::install("biomaRt")
+library(biomaRt)
+
+# Load expression data
+expr_data <- read.csv("gse_Insulinresistance_Pcos_Exp_Data.csv", row.names = NULL)
+
+# Clean gene names
+expr_data$Gene <- make.unique(as.character(expr_data$Gene.Symbol))
+expr_data <- expr_data[!is.na(expr_data$Gene), ]
+rownames(expr_data) <- expr_data$Gene
+expr_data <- expr_data[, !names(expr_data) %in% "Gene"]
+
+# Remove duplicate gene rows
+expr_data <- expr_data[!duplicated(rownames(expr_data)), ]
+
+# Connect to Ensembl via biomaRt
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# Get transcript lengths
+gene_lengths_df <- getBM(attributes = c("hgnc_symbol", "transcript_length"),
+                         filters = "hgnc_symbol",
+                         values = rownames(expr_data),
+                         mart = ensembl)
+
+# Keep the longest transcript per gene
+gene_lengths_df <- aggregate(transcript_length ~ hgnc_symbol, data = gene_lengths_df, FUN = max)
+
+# Map gene lengths to expression matrix
+gene_lengths <- gene_lengths_df$transcript_length
+names(gene_lengths) <- gene_lengths_df$hgnc_symbol
+gene_lengths <- gene_lengths[rownames(expr_data)]
+
+# Remove any NAs or zero lengths
+valid <- !is.na(gene_lengths) & gene_lengths > 0
+expr_data <- expr_data[valid, ]
+gene_lengths <- gene_lengths[valid]
+
+# TPM function
+counts_to_tpm <- function(counts, lengths) {
+  rate <- counts / lengths
+  rate / sum(rate) * 1e6
+}
+# Set rownames and remove gene symbol column
+rownames(expr_data) <- make.unique(as.character(expr_data$Gene.Symbol))
+expr_data$Gene.Symbol <- NULL
+
+# Check numeric
+all(sapply(expr_data, is.numeric))  # Should be TRUE
+
+# Apply TPM conversion (per column/sample)
+tpm <- apply(expr_data, 2, function(x) counts_to_tpm(x, gene_lengths))
+tpm <- as.data.frame(tpm)
+rownames(tpm) <- rownames(expr_data)
+
+# Check column sums
+print(round(colSums(tpm), 2))
+
+
+# Save output
+write.csv(tpm, "tpm_outputGSE271223.csv")
